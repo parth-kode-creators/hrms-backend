@@ -48,6 +48,36 @@ class AttendanceMeResponse(BaseModel):
     items: List[AttendanceLogItem]
 
 
+class AttendanceHistoryItem(BaseModel):
+    id: int
+    employee_id: int
+    employee_name: Optional[str] = None
+    employee_code: Optional[str] = None
+    department: Optional[str] = None
+    date: date
+    check_in_time: Optional[datetime] = None
+    check_out_time: Optional[datetime] = None
+    check_in_method: Optional[CheckMethod] = None
+    check_out_method: Optional[CheckMethod] = None
+    check_in_ip: Optional[str] = None
+    check_in_lat: Optional[float] = None
+    check_in_lng: Optional[float] = None
+    status: str
+    is_regularized: bool = False
+    regularize_reason: Optional[str] = None
+    total_hours: Optional[float] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AttendanceHistoryResponse(BaseModel):
+    total: int
+    page: int
+    limit: int
+    items: List[AttendanceHistoryItem]
+
+
 class RegularizeRequest(BaseModel):
     attendance_id: int
     requested_check_in: Optional[datetime] = None

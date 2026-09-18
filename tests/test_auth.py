@@ -1,3 +1,4 @@
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -132,3 +133,128 @@ def test_api_v1_prefix_support():
     me_res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me_res.status_code == 200
     assert me_res.json()["email"] == settings.FIRST_SUPER_ADMIN_EMAIL
+
+
+def test_login_with_employee_code():
+    # 1. Admin creates an employee
+    admin_login = client.post("/auth/login", json={
+        "email": settings.FIRST_SUPER_ADMIN_EMAIL,
+        "password": settings.FIRST_SUPER_ADMIN_PASSWORD
+    })
+    admin_token = admin_login.json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    uid = uuid.uuid4().hex[:6]
+    emp_payload = {
+        "full_name": f"Code User {uid}",
+        "email": f"codeuser.{uid}@company.com",
+        "password": "InitialPass123!",
+        "role": "employee"
+    }
+    create_res = client.post("/employees", json=emp_payload, headers=admin_headers)
+    assert create_res.status_code == 201
+    emp_code = create_res.json()["employee_code"]
+    assert emp_code.startswith("EMP")
+
+    # 2. Login using employee_code instead of email
+    login_res = client.post("/auth/login", json={
+        "email": emp_code,
+        "password": "InitialPass123!"
+    })
+    assert login_res.status_code == 200
+    token = login_res.json()["access_token"]
+    assert token is not None
+
+    # 3. Login using lowercase employee_code
+    lower_res = client.post("/auth/login", json={
+        "email": emp_code.lower(),
+        "password": "InitialPass123!"
+    })
+    assert lower_res.status_code == 200
+
+
+def test_change_password_flow():
+    admin_login = client.post("/auth/login", json={
+        "email": settings.FIRST_SUPER_ADMIN_EMAIL,
+        "password": settings.FIRST_SUPER_ADMIN_PASSWORD
+    })
+    admin_token = admin_login.json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    uid = uuid.uuid4().hex[:6]
+    create_res = client.post("/employees", json={
+        "full_name": f"Change Pass {uid}",
+        "email": f"changepass.{uid}@company.com",
+        "password": "OldPassword123!",
+        "role": "employee"
+    }, headers=admin_headers)
+    assert create_res.status_code == 201
+
+    # Login with current password
+    user_login = client.post("/auth/login", json={
+        "email": f"changepass.{uid}@company.com",
+        "password": "OldPassword123!"
+    })
+    user_token = user_login.json()["access_token"]
+    user_headers = {"Authorization": f"Bearer {user_token}"}
+
+    # Attempt with wrong old password -> 400
+    fail_res = client.post("/auth/change-password", json={
+        "old_password": "WrongPassword999!",
+        "new_password": "NewSecretPass123!"
+    }, headers=user_headers)
+    assert fail_res.status_code == 400
+
+    # Change with correct old password -> 200
+    success_res = client.post("/auth/change-password", json={
+        "old_password": "OldPassword123!",
+        "new_password": "NewSecretPass123!"
+    }, headers=user_headers)
+    assert success_res.status_code == 200
+
+    # Old password no longer works
+    old_login = client.post("/auth/login", json={
+        "email": f"changepass.{uid}@company.com",
+        "password": "OldPassword123!"
+    })
+    assert old_login.status_code == 401
+
+    # New password works
+    new_login = client.post("/auth/login", json={
+        "email": f"changepass.{uid}@company.com",
+        "password": "NewSecretPass123!"
+    })
+    assert new_login.status_code == 200
+
+
+def test_reset_employee_password_by_admin():
+    admin_login = client.post("/auth/login", json={
+        "email": settings.FIRST_SUPER_ADMIN_EMAIL,
+        "password": settings.FIRST_SUPER_ADMIN_PASSWORD
+    })
+    admin_token = admin_login.json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    uid = uuid.uuid4().hex[:6]
+    create_res = client.post("/employees", json={
+        "full_name": f"Reset User {uid}",
+        "email": f"resetuser.{uid}@company.com",
+        "password": "InitialPass123!",
+        "role": "employee"
+    }, headers=admin_headers)
+    assert create_res.status_code == 201
+    emp_id = create_res.json()["id"]
+
+    # Admin resets password
+    reset_res = client.put(f"/employees/{emp_id}/reset-password", json={
+        "new_password": "AdminSetNewPass123!"
+    }, headers=admin_headers)
+    assert reset_res.status_code == 200
+
+    # Employee logs in with newly reset password
+    login_res = client.post("/auth/login", json={
+        "email": f"resetuser.{uid}@company.com",
+        "password": "AdminSetNewPass123!"
+    })
+    assert login_res.status_code == 200
+

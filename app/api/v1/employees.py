@@ -17,6 +17,7 @@ from app.schemas.employee import (
     EmployeeDetail,
     EmployeeListResponse,
     EmployeeListItem,
+    ResetPasswordRequest,
 )
 from app.services.employee_service import generate_next_employee_code, initialize_leave_balances
 
@@ -332,4 +333,28 @@ def delete_employee(
             user.is_active = False
         db.commit()
         return {"status": "success", "message": f"Employee {emp.full_name} deactivated successfully"}
+
+
+@router.put("/{id}/reset-password", summary="Reset employee login password")
+def reset_employee_password(
+    id: int,
+    body: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.super_admin, UserRole.hr_admin]))
+):
+    """
+    Reset employee account password (HR / Super Admin only).
+    """
+    emp = db.execute(select(Employee).where(Employee.id == id)).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    user = db.execute(select(User).where(User.employee_id == id)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Linked user login account not found")
+
+    user.password_hash = get_password_hash(body.new_password.strip())
+    db.commit()
+    return {"status": "success", "message": f"Password for {emp.full_name} has been reset successfully"}
+
 

@@ -79,3 +79,8 @@ class EmployeeDetail(BaseModel):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str
+

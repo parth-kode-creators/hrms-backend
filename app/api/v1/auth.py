@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select
+from sqlalchemy import select, or_, func
 from jose import JWTError
 
 from app.db.session import get_db
-from app.core.security import verify_password, create_access_token, create_refresh_token, decode_token
+from app.core.security import verify_password, get_password_hash, create_access_token, create_refresh_token, decode_token
 from app.core.deps import get_current_user
 from app.models.user import User
+from app.models.employee import Employee
 from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
@@ -15,6 +16,7 @@ from app.schemas.auth import (
     RefreshTokenRequest,
     RefreshTokenResponse,
     CurrentUserResponse,
+    ChangePasswordRequest,
 )
 
 router = APIRouter()
@@ -23,17 +25,30 @@ router = APIRouter()
 @router.post("/login", response_model=LoginResponse, summary="User Login")
 def login(request: LoginRequest, db: Session = Depends(get_db)):
     """
-    Authenticate user by email and password.
+    Authenticate user by email or employee code, and password.
     Returns access and refresh JWT tokens along with user information.
     """
+    identifier = request.email.lower().strip()
     stmt = (
         select(User)
+        .outerjoin(User.employee)
         .options(joinedload(User.employee))
-        .where(User.email == request.email.lower().strip())
+        .where(
+            or_(
+                User.email == identifier,
+                func.lower(Employee.employee_code) == identifier
+            )
+        )
     )
     user = db.execute(stmt).scalar_one_or_none()
 
-    if not user or not verify_password(request.password, user.password_hash):
+    password_valid = False
+    if user and user.password_hash:
+        password_valid = verify_password(request.password, user.password_hash)
+        if not password_valid and request.password != request.password.strip():
+            password_valid = verify_password(request.password.strip(), user.password_hash)
+
+    if not user or not password_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -123,3 +138,24 @@ def get_me(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         role=current_user.role.value
     )
+
+
+@router.post("/change-password", summary="Change current user's password")
+def change_password(
+    req: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Allows the logged-in user to change their password.
+    """
+    if not verify_password(req.old_password, current_user.password_hash) and not verify_password(req.old_password.strip(), current_user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password does not match"
+        )
+
+    current_user.password_hash = get_password_hash(req.new_password)
+    db.commit()
+    return {"status": "success", "message": "Password changed successfully"}
+

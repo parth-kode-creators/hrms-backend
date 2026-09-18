@@ -175,3 +175,72 @@ def test_attendance_excel_export_and_import():
     assert import_res.status_code == 200
     import_data = import_res.json()
     assert import_data["imported"] >= 1
+
+
+def test_super_admin_view_check_in_history():
+    admin_token = get_admin_token()
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # Create employee and check in
+    user = create_test_employee()
+    check_in_res = client.post(
+        "/attendance/check-in",
+        json={"lat": 22.307159, "lng": 73.181219, "method": "mobile_geofence"},
+        headers=user["headers"]
+    )
+    assert check_in_res.status_code == 200
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # 1. Super admin views all check-in history
+    res = client.get("/attendance/history", headers=admin_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "total" in data
+    assert "items" in data
+    assert data["total"] >= 1
+    assert any(item["employee_id"] == user["employee_id"] for item in data["items"])
+
+    # Verify check-in fields
+    target_item = next(item for item in data["items"] if item["employee_id"] == user["employee_id"])
+    assert target_item["status"] == "present"
+    assert target_item["check_in_time"] is not None
+    assert target_item["employee_name"] is not None
+
+    # 2. Date filter (exact match)
+    res_date = client.get(f"/attendance/history?date={today_str}", headers=admin_headers)
+    assert res_date.status_code == 200
+    date_data = res_date.json()
+    assert all(item["date"] == today_str for item in date_data["items"])
+    assert any(item["employee_id"] == user["employee_id"] for item in date_data["items"])
+
+    # 3. Date range filter
+    res_range = client.get(
+        f"/attendance/history?start_date={today_str}&end_date={today_str}",
+        headers=admin_headers
+    )
+    assert res_range.status_code == 200
+    range_data = res_range.json()
+    assert all(item["date"] == today_str for item in range_data["items"])
+
+    # 4. Filter by employee_id
+    res_emp = client.get(
+        f"/attendance/history?employee_id={user['employee_id']}",
+        headers=admin_headers
+    )
+    assert res_emp.status_code == 200
+    emp_data = res_emp.json()
+    assert emp_data["total"] >= 1
+    assert all(item["employee_id"] == user["employee_id"] for item in emp_data["items"])
+
+    # 5. Pagination
+    res_page = client.get("/attendance/history?page=1&limit=2", headers=admin_headers)
+    assert res_page.status_code == 200
+    page_data = res_page.json()
+    assert len(page_data["items"]) <= 2
+    assert page_data["page"] == 1
+    assert page_data["limit"] == 2
+
+    # 6. Non-admin (employee) access is forbidden
+    emp_unauthorized_res = client.get("/attendance/history", headers=user["headers"])
+    assert emp_unauthorized_res.status_code == 403
+

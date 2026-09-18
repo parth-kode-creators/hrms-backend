@@ -4,8 +4,13 @@ from app.models.enums import UserRole
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str  # Can be user email or employee code (e.g. EMP0007)
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
 
 
 class TokenUser(BaseModel):

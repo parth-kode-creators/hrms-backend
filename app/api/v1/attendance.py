@@ -2,7 +2,7 @@ from datetime import datetime, date, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request, status, Response
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select, and_, extract
+from sqlalchemy import select, and_, extract, func
 
 from app.db.session import get_db
 from app.core.deps import get_current_user, require_role
@@ -17,6 +17,8 @@ from app.schemas.attendance import (
     CheckOutResponse,
     AttendanceMeResponse,
     AttendanceLogItem,
+    AttendanceHistoryItem,
+    AttendanceHistoryResponse,
     RegularizeRequest,
     RegularizeResponse,
     ApproveRegularizeRequest,
@@ -192,6 +194,88 @@ def get_my_attendance(
         for r in records
     ]
     return AttendanceMeResponse(items=items)
+
+
+@router.get("/history", response_model=AttendanceHistoryResponse, summary="Super Admin view check-in history of all with date filter")
+@router.get("", response_model=AttendanceHistoryResponse, summary="List check-in / attendance records with date filter")
+def get_attendance_history(
+    date: Optional[date] = Query(None, description="Filter by exact date (YYYY-MM-DD)"),
+    start_date: Optional[date] = Query(None, description="Filter start date (YYYY-MM-DD) inclusive"),
+    end_date: Optional[date] = Query(None, description="Filter end date (YYYY-MM-DD) inclusive"),
+    employee_id: Optional[int] = Query(None, description="Filter by employee ID"),
+    department_id: Optional[int] = Query(None, description="Filter by department ID"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by attendance status"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.super_admin, UserRole.hr_admin]))
+):
+    """
+    Super Admin & HR Admin endpoint to view check-in / attendance history of all employees.
+    Supports filtering by exact date, date range (start_date to end_date), employee, department, and status.
+    """
+    stmt = (
+        select(Attendance)
+        .options(
+            joinedload(Attendance.employee).joinedload(Employee.department)
+        )
+    )
+
+    if department_id is not None:
+        stmt = stmt.join(Employee, Attendance.employee_id == Employee.id).where(Employee.department_id == department_id)
+
+    if date is not None:
+        stmt = stmt.where(Attendance.date == date)
+    if start_date is not None and date is None:
+        stmt = stmt.where(Attendance.date >= start_date)
+    if end_date is not None and date is None:
+        stmt = stmt.where(Attendance.date <= end_date)
+
+    if employee_id is not None:
+        stmt = stmt.where(Attendance.employee_id == employee_id)
+
+    if status_filter is not None:
+        stmt = stmt.where(Attendance.status == status_filter)
+
+    # Count total
+    count_query = select(func.count()).select_from(stmt.order_by(None).subquery())
+    total = db.execute(count_query).scalar() or 0
+
+    # Paginate and order by date desc, id desc
+    offset = (page - 1) * limit
+    paged_stmt = stmt.order_by(Attendance.date.desc(), Attendance.id.desc()).offset(offset).limit(limit)
+    records = db.execute(paged_stmt).scalars().unique().all()
+
+    items = [
+        AttendanceHistoryItem(
+            id=r.id,
+            employee_id=r.employee_id,
+            employee_name=r.employee.full_name if r.employee else None,
+            employee_code=r.employee.employee_code if r.employee else None,
+            department=r.employee.department.name if (r.employee and r.employee.department) else None,
+            date=r.date,
+            check_in_time=r.check_in_time,
+            check_out_time=r.check_out_time,
+            check_in_method=r.check_in_method,
+            check_out_method=r.check_out_method,
+            check_in_ip=r.check_in_ip,
+            check_in_lat=float(r.check_in_lat) if r.check_in_lat is not None else None,
+            check_in_lng=float(r.check_in_lng) if r.check_in_lng is not None else None,
+            status=r.status,
+            is_regularized=r.is_regularized,
+            regularize_reason=r.regularize_reason,
+            total_hours=float(r.total_hours) if r.total_hours is not None else None,
+            created_at=r.created_at
+        )
+        for r in records
+    ]
+
+    return AttendanceHistoryResponse(
+        total=total,
+        page=page,
+        limit=limit,
+        items=items
+    )
 
 
 @router.post("/regularize", response_model=RegularizeResponse, summary="Submit attendance regularization request")
