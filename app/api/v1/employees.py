@@ -289,3 +289,47 @@ def update_employee(
     db.commit()
     db.refresh(emp)
     return emp
+
+
+@router.delete("/{id}", status_code=status.HTTP_200_OK, summary="Delete or deactivate employee")
+def delete_employee(
+    id: int,
+    hard_delete: bool = Query(False, description="Permanently delete instead of deactivating"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role([UserRole.super_admin, UserRole.hr_admin]))
+):
+    """
+    Deactivate or permanently delete an employee (HR / Super Admin only).
+    - Default (hard_delete=false): Sets employee status to 'inactive' and deactivates linked user login.
+    - Permanent (hard_delete=true): Removes employee record from database.
+    """
+    emp = db.execute(select(Employee).where(Employee.id == id)).scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    # Prevent admin from deactivating or deleting themselves
+    if emp.id == current_user.employee_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete or deactivate your own account"
+        )
+
+    if hard_delete:
+        try:
+            db.delete(emp)
+            db.commit()
+            return {"status": "success", "message": f"Employee {emp.full_name} permanently deleted"}
+        except Exception:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot permanently delete employee due to existing related records. Deactivate instead."
+            )
+    else:
+        emp.status = "inactive"
+        user = db.execute(select(User).where(User.employee_id == emp.id)).scalar_one_or_none()
+        if user:
+            user.is_active = False
+        db.commit()
+        return {"status": "success", "message": f"Employee {emp.full_name} deactivated successfully"}
+
